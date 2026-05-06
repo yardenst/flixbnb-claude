@@ -10,7 +10,8 @@
 - [ ] **Replace direct `triggerHandleListingAsync` calls in listing issues route** with an SQS event — marked as `// TODO: temp` in `src/routes/v1/listings/issues/index.ts`.
 
 ### AI / Agent Pipeline
-- [ ] **Auto-apply suggestions on a separate queue** — `RC_VERIFY_MESSAGE` and `RC_GUEST_WELCOME` auto-approval currently runs inline on the agent queue (`src/checks/reservations/index.ts:137`). Should be dispatched to its own queue to avoid blocking.
+- [x] **`RC_GUEST_WELCOME` and `RC_VERIFY_MESSAGE` auto-send was fire-and-forget** — `applyCheckSuggestion` was not awaited, so AWS Lambda froze Node.js before it completed. Fixed by awaiting the call (`src/checks/reservations/index.ts`).
+- [ ] **Auto-apply suggestions on a separate queue** — `RC_VERIFY_MESSAGE` and `RC_GUEST_WELCOME` auto-approval currently runs inline on the agent queue (`src/checks/reservations/index.ts`). Should be dispatched to its own queue to avoid blocking.
 - [ ] **Remove `GUEST_MESSAGE` action type from staff-ops model** once `ASK_STAFF` action messaging is implemented (`backoffice-staff-operations-model-instructions.ts:1`).
 - [ ] **`FrontDeskAgentTask` context refactor** — task currently receives the full suggestion context; it should fetch only what it needs (`src/checks/reservations/check-suggestions/suggestors/frontdesk/tasks/FrontDeskAgentTask.ts:14–18`).
 - [ ] **Per-agent prompt fetching** — agent tasks should fetch their own prompts from DB rather than receiving them from the caller (`FrontDeskAgentTask.ts:18`).

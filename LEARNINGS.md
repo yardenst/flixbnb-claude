@@ -11,6 +11,9 @@ Lessons learned, gotchas, and non-obvious decisions made during development.
 - **FIFO queues require a `MessageGroupId`**: all SQS sends must include one or messages are rejected. We group by `reservationPmsId` or `listingId` to preserve ordering per entity.
 - **Lambda `visibilityTimeoutSeconds` must exceed function timeout**: both are set to 300s. If the Lambda runs longer, SQS will re-deliver the message to another consumer while the first is still running.
 
+### Lambda + Async: Don't Fire-and-Forget
+- **AWS Lambda freezes Node.js when the handler resolves** — any un-awaited promises are killed. `applyCheckSuggestion` was called without `await` inside `handleAgentIncoming`, so the Lambda returned and AWS froze the process before the message was sent. This caused `RC_GUEST_WELCOME` and `RC_VERIFY_MESSAGE` to silently never send. Always `await` async side-effects in Lambda handlers before returning.
+
 ### AI / Agent Suggestions
 - **Context size is the main cost driver**: `FrontDeskAgentTask` receives the full suggestion context even though it only uses part of it. Reducing context = lower latency + cost.
 - **`bufferAllowWithoutHuman` bypasses the approval step**: when set on a `ReservationCheck`, the system auto-applies the AI suggestion without staff review. Only safe for low-risk check types (`RC_VERIFY_MESSAGE`, `RC_GUEST_WELCOME`).
