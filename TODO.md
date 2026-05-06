@@ -40,6 +40,7 @@
 ## Control Platform (`flixbnb-lobby`)
 
 ### Features
+- [x] **Add per-task translate to Spanish button** — added 🇪🇸 button to each task card in `ContactTasksDashboard.tsx`; toggles translated title/description via `/api/translate` Next.js route.
 - [ ] **Add `agentSuggestedAt` to `ReservationCheck` type** — field is commented out in `src/types.ts:529`.
 - [ ] **Fix timezone in guest chat** — `Chat.tsx:11` uses a hardcoded timezone instead of the listing's timezone.
 

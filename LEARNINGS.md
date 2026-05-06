@@ -50,6 +50,10 @@ Lessons learned, gotchas, and non-obvious decisions made during development.
 - **`[partnerName]` vs `[partnerId]`**: public-facing pages (cleaners, guests) use `partnerName` in the URL; internal staff pages use `partnerId`. Don't mix them.
 - **`[contacthash]`** is an opaque hash, not the DB `id`. Used in URLs sent to cleaners via WhatsApp so they can't enumerate other contacts.
 
+### Task Content Translation
+- **UI locale switching (next-intl) translates the UI chrome, not task content** — task `name` and `what` fields come from the backend in English. To translate them, we proxy through `/api/translate` (Next.js route → MyMemory free API). Sending both fields as a single structured string (`Title: ...\n\nDescription: ...`) in one request keeps it to one API call per card and lets a single regex split them back apart.
+- **Translation is per-card and toggleable** — clicking 🇪🇸 again reverts to the original. State is a `Record<checkId, TranslatedTask | 'loading'>` so each card is independent.
+
 ### i18n
 - **Cleaner-facing pages are translated** (EN/ES/EL); staff-facing pages are English only. Only add `next-intl` keys for pages cleaners or guests will see.
 
