@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../flixbnb-lobby"
+		},
+		{
+			"path": "../flixbnb"
+		}
+	],
+	"settings": {}
+}
