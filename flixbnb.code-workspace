@@ -8,6 +8,9 @@
 		},
 		{
 			"path": "../flixbnb"
+		},
+		{
+			"path": "../sapi/control-room-backend"
 		}
 	],
 	"settings": {}

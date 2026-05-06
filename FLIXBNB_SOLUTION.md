@@ -4,16 +4,17 @@
 
 Flixbnb is a **vacation rental operations platform** that helps property managers automate and manage the full guest lifecycle — from inquiry to checkout — across listings on Airbnb and other OTAs. The system integrates with Hostaway (PMS) and WhatsApp (WATI) to centralize operations.
 
-The product consists of two apps:
+The product consists of three repositories:
 
-| App | Folder | Role |
+| Repo | Path | Role |
 |---|---|---|
-| Marketing site | `flixbnb` | Public-facing landing page |
-| Control platform | `flixbnblobby` | Internal ops dashboard for staff |
+| Landing page | `../flixbnb` | Public-facing marketing site |
+| Control platform | `../flixbnb-lobby` | Internal ops dashboard for staff |
+| Backend | `../sapi/control-room-backend` | API server, data pipelines, and infrastructure |
 
 ---
 
-## 1. Marketing Site — `flixbnb`
+## 1. Landing Page — `flixbnb`
 
 ### Purpose
 
@@ -55,7 +56,7 @@ flixbnb/
 
 ---
 
-## 2. Control Platform — `flixbnblobby`
+## 2. Control Platform — `flixbnb-lobby`
 
 ### Purpose
 
@@ -73,14 +74,13 @@ A Next.js 15 full-stack application used by internal Flixbnb staff to manage eve
 | Date/time | Luxon |
 | Auth | next-auth 5 (beta) |
 | i18n | next-intl 4 |
-| Database client | Neon (serverless Postgres) |
 | WhatsApp | WATI Business API |
 | PMS | Hostaway |
 
 ### Directory Structure
 
 ```
-flixbnblobby/
+flixbnb-lobby/
 ├── src/
 │   ├── api/                          # API client hooks
 │   │   ├── index.ts                  # Core hooks: useGetData, useFindData, usePostData, etc.
@@ -139,7 +139,128 @@ flixbnblobby/
 
 ---
 
-## 3. Data Models
+## 3. Backend — `control-room-backend`
+
+A monorepo at `../sapi/control-room-backend` containing the API server, a vendor data pipeline, and all cloud infrastructure definitions.
+
+```
+control-room-backend/
+├── control-room/     # Node.js Fastify API + Lambda event handlers
+├── vendor-net/       # Python data pipeline (Hostaway & WATI → Postgres)
+├── infra-core/       # Pulumi: VPC, Engine Room (Postgres on AWS)
+└── infra-services/   # Pulumi: ECS service, Lambdas, SQS, ALB, Cloudflare DNS
+```
+
+### 3.1 control-room (API Server)
+
+#### Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Framework | Fastify 5 |
+| Language | TypeScript 5.8 |
+| ORM | Drizzle ORM |
+| Database | Neon (serverless Postgres) |
+| AI | Vercel AI SDK + AWS Bedrock + OpenAI |
+| Observability | Sentry + Traceloop |
+| Scheduling | AWS Lambda + CloudWatch Events |
+| Queuing | AWS SQS FIFO |
+
+#### Source Structure
+
+```
+control-room/src/
+├── app.ts                # Fastify app setup + plugin registration
+├── server.ts             # HTTP server entry point
+├── routes/
+│   └── v1/               # All REST routes (partners, checks, reservations, …)
+├── ai/
+│   ├── ai-client.ts      # Vercel AI SDK wrapper (Bedrock + OpenAI)
+│   └── AgentTask.ts      # AI task execution
+├── checks/
+│   └── reservations/
+│       ├── check-suggestions/       # AI suggestion pipeline
+│       │   ├── CheckSuggestionCreator.ts
+│       │   ├── create-context.ts    # Builds AI context from reservation + listing
+│       │   ├── suggestion-context.ts
+│       │   ├── *-model-instructions.ts  # System prompts per operation mode
+│       │   └── suggestors/          # Per-check-type AI suggestors
+│       │       ├── collectors/      # Mid-stay / checkout suggestors
+│       │       └── frontdesk/       # Verify-message suggestors
+│       ├── index.ts                 # Check handler (create, update, suggest)
+│       ├── create-reservation-checks.ts
+│       ├── applyCheckSuggestion.ts
+│       └── humanApprove.ts
+├── lambdas/
+│   ├── trigger-events.ts       # CloudWatch → SQS dispatch
+│   ├── handle-events.ts        # SQS → event processor
+│   ├── trigger-agent-events.ts # CloudWatch → agent SQS dispatch
+│   └── handle-agent-events.ts  # Agent SQS → AI pipeline
+├── db/
+│   ├── schema.ts           # Drizzle table definitions (control_room schema)
+│   ├── views_schema.ts     # Drizzle view definitions
+│   └── index.ts            # DB client
+└── [assignments, contacts, listings, messages, reservations, …]
+```
+
+#### Lambda Event Scheduling
+
+| Schedule | Lambda | Purpose |
+|---|---|---|
+| Every 1 min | trigger-events | High-frequency check triggers |
+| Every 5 min | trigger-events + trigger-agent-events | Check + AI agent triggers |
+| Every 10 min | trigger-events | Medium-frequency triggers |
+| Every hour | trigger-events + trigger-agent-events | Hourly maintenance |
+| Daily at 6am | trigger-events + trigger-agent-events | Daily batch jobs |
+
+### 3.2 vendor-net (Data Pipeline)
+
+A **Python** service that syncs external vendor data into the Postgres `engine_room` database using [dlt](https://dlthub.com/).
+
+#### Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Language | Python 3.12+ |
+| Pipeline | dlt (data load tool) |
+| Sources | Hostaway API, WATI API |
+| Destination | Postgres (engine_room schema) |
+| Deployment | AWS Lambda |
+| Queue | AWS SQS |
+| Secrets | AWS SSM Parameter Store |
+| Monitoring | Sentry |
+
+#### Structure
+
+```
+vendor-net/vendor_net/
+├── hostaway/                  # Hostaway pipeline
+├── wati/
+│   ├── lambdas/               # Lambda handlers (trigger, handle, webhook)
+│   └── pipeline/              # dlt pipelines for messages, statuses, templates
+├── source/engine_room.py      # dlt source: reads from engine_room DB
+├── destination/engine_room.py # dlt destination: writes to engine_room DB
+└── utils/
+    ├── hostaway_client.py
+    ├── wati_client.py
+    ├── sqs.py
+    └── ssm.py
+```
+
+### 3.3 Infrastructure
+
+Managed with **Pulumi** (TypeScript). Deployed on **AWS**, DNS on **Cloudflare**.
+
+| Package | What it provisions |
+|---|---|
+| `infra-core` | VPC, private/public subnets, Engine Room (Postgres, SSM params) |
+| `infra-services` | ECS Fargate service (control-room), Lambda functions, SQS FIFO queues, ALB, ACM cert, Cloudflare CNAME |
+
+Production API endpoint: `https://api.flixbnb.com`
+
+---
+
+## 4. Data Models
 
 ### Partner
 The top-level organizational unit. Four active partners: Ran, Click & Keys, WaveStay, UrbanKey.
@@ -149,7 +270,9 @@ The top-level organizational unit. Four active partners: Ran, Click & Keys, Wave
   id: number
   name: string
   hostawayAccountId: number
+  hostawayJWT: string
   cleaningPublishDate: string
+  cleaningPublishContactPhone?: string
 }
 ```
 
@@ -160,7 +283,7 @@ A property managed by Flixbnb. Contains operational documentation used to inform
 {
   id: number
   partnerId: number
-  pmsId: number
+  pmsId: string             // "hostaway:accountid:listingid"
   nickname: string
   timezone: string
   isEnabled: boolean
@@ -188,7 +311,7 @@ A property managed by Flixbnb. Contains operational documentation used to inform
 ```
 
 ### HostawayReservation
-Sourced from Hostaway PMS. Central to all operations.
+Sourced from Hostaway PMS via vendor-net pipeline. Central to all operations.
 
 ```typescript
 {
@@ -199,10 +322,7 @@ Sourced from Hostaway PMS. Central to all operations.
   channelName: string           // "Airbnb", etc.
   reservationId: string
   guestName: string
-  guestFirstName: string
-  guestLastName: string
   phone: string
-  guestCountry: string
   numberOfGuests: number
   arrivalDate: string
   departureDate: string
@@ -212,8 +332,6 @@ Sourced from Hostaway PMS. Central to all operations.
   status: string
   confirmationCode: string
   guestNote: string
-  guestPortalUrl: string
-  reservationAgreement: string
   accountId: number
 }
 ```
@@ -250,9 +368,9 @@ An instance of one check type for one reservation.
 {
   id: number
   listingId: number
-  reservationPmsId: string
+  reservationPmsId: string        // "hostaway:accountid:reservationid"
   reservationCheckType: ReservationCheckType
-  checkVisibleAt: string          // Scheduled visibility time
+  checkVisibleAt: string
 
   // Completion
   checkedBy?: string
@@ -309,7 +427,7 @@ AI-generated action recommendation for a check.
 ```typescript
 {
   id: number
-  day: string
+  day: string                   // "2025/05/25"
   contactId: number             // Cleaner
   listingId: number
   priority: number
@@ -350,9 +468,9 @@ Cleaner or staff member.
 
 ---
 
-## 4. Backend API Reference
+## 5. Backend API Reference
 
-All requests go to `CONTROL_ROOM_BACKEND_URL` (env var). Base path: `/v1/`.
+All requests go to `CONTROL_ROOM_BACKEND_URL` (env var, prod: `https://api.flixbnb.com`). Base path: `/v1/`.
 
 ### Partners
 | Method | Path | Description |
@@ -430,7 +548,7 @@ All requests go to `CONTROL_ROOM_BACKEND_URL` (env var). Base path: `/v1/`.
 
 ---
 
-## 5. Key Features
+## 6. Key Features
 
 ### Reservation Lifecycle Checks (Core Feature)
 
@@ -442,6 +560,8 @@ The `checks` module is the heart of the platform. Each reservation gets a set of
 3. An AI agent pre-populates a suggested action (`AgentSuggestion`) with a recommended message and channel.
 4. Staff approves or overrides → action executes (send WhatsApp, send Hostaway message, mark done, snooze, etc.).
 5. Check is closed; the system moves to the next one.
+
+**AI pipeline**: The backend builds a rich context object (reservation data, message history, listing docs, prior checks) and passes it through operation-mode-specific system prompts to Bedrock/OpenAI via the Vercel AI SDK. Results are persisted as `AgentSuggestion` records.
 
 ### Cleaner Scheduling
 
@@ -462,19 +582,21 @@ An internal messaging hub that aggregates WhatsApp conversations with cleaners a
 
 The `/prompts` page provides a UI for staff to view and edit the prompt templates fed to the AI agent that generates `AgentSuggestion` records. A `Snapshot` view shows historical suggestion data.
 
+### Flix Rating
+
+Automated post-stay rating system that scores reservations across: general guest sentiment, service quality, cleaning quality, and complaint severity. Triggered via Lambda and stored in `reservations_flix_rating`.
+
 ### Multi-Channel Messaging
 
 | Channel | Integration | Use case |
 |---|---|---|
 | Hostaway / OTA | Hostaway API | Guest messages via Airbnb |
 | WhatsApp | WATI Business API | Guest & cleaner direct messages |
-| Phone | Manual log | Voice calls |
-
-WATI message composition uses template-based and session-based messages (`WatiTemplateCompose`, `WatiSessionMessageComposer`).
+| Phone / Twilio | Twilio | Voice calls |
 
 ---
 
-## 6. Internationalization
+## 7. Internationalization
 
 Supported languages: **English**, **Spanish**, **Greek**
 
@@ -484,9 +606,9 @@ Supported languages: **English**, **Spanish**, **Greek**
 
 ---
 
-## 7. Data Fetching Pattern
+## 8. Data Fetching Pattern
 
-All API calls use a consistent wrapper built on `ahooks/useRequest`:
+All API calls in the lobby use a consistent wrapper built on `ahooks/useRequest`:
 
 ```typescript
 // GET with auto-refresh
@@ -503,9 +625,9 @@ The wrappers handle loading state, error state, and optional polling intervals �
 
 ---
 
-## 8. Configuration & Environment
+## 9. Configuration & Environment
 
-### Environment Variables (`flixbnblobby/.env`)
+### flixbnb-lobby (`flixbnb-lobby/.env`)
 
 ```
 CONTROL_ROOM_BACKEND_URL=http://localhost:3001
@@ -513,65 +635,103 @@ NEXT_PUBLIC_CONTROL_ROOM_BACKEND_URL=http://localhost:3001
 WATI_TOKEN=<WATI JWT token>
 ```
 
-### Firebase (`flixbnb`)
+### control-room (runtime env vars on ECS / Lambda)
 
-Firebase project `flixbnb-fbdf1` is used for Analytics and Hosting. Config lives in `App.tsx`.
+```
+PG_CONNECTION_NAME=<SSM parameter name for Postgres connection>
+SENTRY_DSN=<Sentry DSN>
+EVENTS_QUEUE_URL=<SQS FIFO queue URL>
+AGENT_EVENTS_QUEUE_URL=<SQS FIFO queue URL>
+ENV_NAME=<stack name>
+LOG_LEVEL=info
+```
 
-### Next.js API Routes (Proxies)
-
-`/api/proxy-image` and `/api/proxy-safari-video` proxy external media to fix CDN and Safari video compatibility issues.
+Secrets (Hostaway JWT, WATI token, OpenAI key) are fetched at runtime from **AWS SSM Parameter Store**.
 
 ---
 
-## 9. Deployment
+## 10. Deployment
 
-### `flixbnb` (Marketing)
+### `flixbnb` (Landing page)
 
 ```
 npm run build       # Vite → /dist
 firebase deploy     # Upload dist to Firebase Hosting
 ```
 
-### `flixbnblobby` (Control Platform)
+### `flixbnb-lobby` (Control Platform)
 
 ```
 npm run build       # Next.js build
 # Deploy to Vercel or any Node.js host
 ```
 
----
-
-## 10. System Architecture Diagram
+### `control-room-backend` (Backend)
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                        Internet                             │
-└──────────────┬──────────────────────────────┬──────────────┘
-               │                              │
-       ┌───────▼──────┐              ┌────────▼────────┐
-       │  flixbnb     │              │  flixbnblobby   │
-       │  (Marketing) │              │  (Control App)  │
-       │  Firebase    │              │  Next.js 15     │
-       │  Hosting     │              │  (Vercel/Node)  │
-       └──────────────┘              └────────┬────────┘
-                                              │
-                              ┌───────────────┼───────────────┐
-                              │               │               │
-                     ┌────────▼──────┐ ┌─────▼──────┐ ┌─────▼──────┐
-                     │  Flixbnb      │ │  Hostaway  │ │   WATI     │
-                     │  Backend API  │ │  PMS API   │ │  WhatsApp  │
-                     │  :3001        │ │            │ │  API       │
-                     └────────┬──────┘ └────────────┘ └────────────┘
-                              │
-                     ┌────────▼──────┐
-                     │  Neon         │
-                     │  Postgres     │
-                     └───────────────┘
+# Build Docker image
+docker build -t control-room ./control-room
+
+# Push via Pulumi (infra-services)
+DEPLOY_CTRL_ROOM_SERVICE=1 RELEASE_TAG=<tag> pulumi up
+
+# Lambdas deployed via same Pulumi stack with DEPLOY_CTRL_ROOM_LAMBDA=1
 ```
 
 ---
 
-## 11. Partners
+## 11. System Architecture Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                           Internet                              │
+└──────────┬─────────────────────┬────────────────────────────────┘
+           │                     │
+   ┌───────▼──────┐      ┌───────▼──────────┐
+   │  flixbnb     │      │  flixbnb-lobby   │
+   │  (Marketing) │      │  (Control App)   │
+   │  Firebase    │      │  Next.js 15      │
+   │  Hosting     │      │  (Vercel/Node)   │
+   └──────────────┘      └───────┬──────────┘
+                                 │ HTTPS
+                    ┌────────────▼────────────┐
+                    │  AWS ALB                │
+                    │  api.flixbnb.com        │
+                    └────────────┬────────────┘
+                                 │
+                    ┌────────────▼────────────┐
+                    │  AWS ECS Fargate        │
+                    │  control-room (Fastify) │
+                    └──┬──────┬──────┬────────┘
+                       │      │      │
+             ┌─────────┘  ┌───┘  ┌───┘
+             │            │      │
+    ┌────────▼──┐  ┌──────▼──┐  ┌▼────────────┐
+    │  Hostaway │  │  WATI   │  │  Neon       │
+    │  PMS API  │  │  WA API │  │  Postgres   │
+    └────────────┘  └─────────┘  └─────────────┘
+             ▲            ▲
+             │            │
+    ┌────────┴────────────┴──┐
+    │  vendor-net (Python)   │
+    │  AWS Lambda + dlt      │
+    │  Syncs data → Postgres │
+    └────────────────────────┘
+
+    ┌─────────────────────────────┐
+    │  AWS Lambda (Event handlers)│
+    │  ├── trigger-events (1m)    │
+    │  ├── handle-events (SQS)    │
+    │  ├── trigger-agent-events   │
+    │  └── handle-agent-events    │
+    │          ▼                  │
+    │    SQS FIFO Queues          │
+    └─────────────────────────────┘
+```
+
+---
+
+## 12. Partners
 
 Four property management companies use the platform:
 
@@ -584,4 +744,4 @@ Four property management companies use the platform:
 
 ---
 
-*Document generated from source code exploration of `flixbnb` and `flixbnblobby`.*
+*Document generated from source code exploration of `flixbnb`, `flixbnb-lobby`, and `sapi/control-room-backend`.*
